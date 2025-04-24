@@ -1,8 +1,9 @@
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from flask import Flask, render_template_string, request, redirect, url_for, flash
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
 import requests
 import os
+import stripe
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev')
@@ -10,6 +11,34 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+
+# Stripe-Konfiguration
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+STRIPE_PUBLIC_KEY = os.environ.get('STRIPE_PUBLIC_KEY', '')
+stripe.api_key = STRIPE_SECRET_KEY
+
+def get_credits_packages():
+    # Alle aktiven Prices mit Lookup-Key aus Stripe holen (sortiert nach Betrag)
+    prices = stripe.Price.list(active=True, expand=['data.product'], limit=20)
+    packages = []
+    for price in prices['data']:
+        lookup_key = price.get('lookup_key')
+        if lookup_key and lookup_key.startswith('credits_'):
+            # Credits-Zahl aus dem Lookup-Key extrahieren
+            try:
+                credits = int(lookup_key.split('_')[1])
+            except Exception:
+                credits = 0
+            packages.append({
+                'credits': credits,
+                'lookup_key': lookup_key,
+                'price_id': price['id'],
+                'amount': price['unit_amount'] / 100,
+                'currency': price['currency'].upper(),
+            })
+    # Nach Credits aufsteigend sortieren
+    packages.sort(key=lambda x: x['credits'])
+    return packages
 
 # Gemini API-Konfiguration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
@@ -57,12 +86,14 @@ def index():
             current_user.credits -= 1
             db.session.commit()
             title = f'AI-generierter Content zu: {topic}'
+    credits_packages = get_credits_packages()
     return render_template_string('''
         <!DOCTYPE html>
         <html lang="de">
         <head>
             <meta charset="utf-8">
             <title>AI Content Generator</title>
+            <script src="https://js.stripe.com/v3/"></script>
             <style>
                 body { font-family: Arial, sans-serif; background: #f8f8ff; padding: 40px; }
                 .container { max-width: 600px; margin: auto; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px #ddd; padding: 30px; }
@@ -73,6 +104,7 @@ def index():
                 .result { margin-top: 30px; }
                 .credits { float: right; color: #888; }
                 .flash { color: red; }
+                .pay { margin-top: 20px; }
             </style>
         </head>
         <body>
@@ -96,12 +128,56 @@ def index():
                     <p>{{ content|safe }}</p>
                 </div>
                 {% endif %}
+                <div class="pay">
+                  <form action="/create_checkout_session" method="POST">
+                    {% for pkg in credits_packages %}
+                      <button type="submit" name="lookup_key" value="{{ pkg['lookup_key'] }}">{{ pkg['credits'] }} Credits für {{ pkg['amount']|round(2) }} {{ pkg['currency'] }} kaufen</button>
+                    {% endfor %}
+                  </form>
+                </div>
                 <br>
                 <a href="{{ url_for('logout') }}">Logout</a>
             </div>
         </body>
         </html>
-    ''', content=content, title=title)
+    ''', content=content, title=title, credits_packages=credits_packages), credits_packages=CREDITS_PACKAGES)
+
+@app.route('/create_checkout_session', methods=['POST'])
+@login_required
+def create_checkout_session():
+    lookup_key = request.form['lookup_key']
+    # Preis-Objekt anhand Lookup-Key holen
+    prices = stripe.Price.list(lookup_keys=[lookup_key], expand=['data.product'])
+    if not prices['data']:
+        flash('Preis nicht gefunden!')
+        return redirect(url_for('index'))
+    price = prices['data'][0]
+    # Credits aus Lookup-Key bestimmen
+    try:
+        credits = int(lookup_key.split('_')[1])
+    except Exception:
+        credits = 0
+    session = stripe.checkout.Session.create(
+        payment_method_types=['card'],
+        line_items=[{
+            'price': price['id'],
+            'quantity': 1,
+        }],
+        mode='payment',
+        success_url=url_for('payment_success', credits=credits, _external=True),
+        cancel_url=url_for('index', _external=True),
+        client_reference_id=current_user.id
+    )
+    return redirect(session.url, code=303)
+
+@app.route('/payment_success')
+@login_required
+def payment_success():
+    credits = int(request.args.get('credits', 0))
+    current_user.credits += credits
+    db.session.commit()
+    flash(f'Zahlung erfolgreich! {credits} Credits wurden deinem Konto gutgeschrieben.')
+    return redirect(url_for('index'))
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
