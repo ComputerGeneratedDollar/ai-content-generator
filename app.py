@@ -70,7 +70,10 @@ def generate_content_gemini(topic):
         result = response.json()
         return result['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        return f"Fehler bei der KI-Generierung: {e} (Fallback: {topic} ist ein spannendes Thema...)"
+        # Fehler intern loggen, aber keine Details (und keinen Key) an den Nutzer ausgeben!
+        import logging
+        logging.error(f"KI-Fehler bei Anfrage zu '{topic}': {e}")
+        return f"Die KI ist aktuell ausgelastet oder nicht erreichbar. Bitte versuche es später erneut. (Fallback: {topic} ist ein spannendes Thema...)"
 
 @app.route('/', methods=['GET', 'POST'])
 @login_required
