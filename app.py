@@ -140,7 +140,7 @@ def index():
             </div>
         </body>
         </html>
-    ''', content=content, title=title, credits_packages=credits_packages), credits_packages=CREDITS_PACKAGES)
+    ''', content=content, title=title, credits_packages=credits_packages)
 
 @app.route('/create_checkout_session', methods=['POST'])
 @login_required
