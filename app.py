@@ -41,8 +41,7 @@ def get_credits_packages():
     return packages
 
 # Gemini API-Konfiguration
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro-preview-03-25:generateContent"
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -54,25 +53,24 @@ class User(UserMixin, db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-def generate_content_gemini(topic):
-    if not GEMINI_API_KEY:
+import openai
+
+def generate_content_openai(topic):
+    if not OPENAI_API_KEY:
         return f"{topic} ist ein spannendes Thema. In diesem Artikel erfährst du alles Wichtige darüber und wie du es für dich nutzen kannst."
-    headers = {"Content-Type": "application/json"}
-    params = {"key": GEMINI_API_KEY}
+    openai.api_key = OPENAI_API_KEY
     prompt = f"Schreibe einen hochwertigen, informativen und motivierenden Blogartikel über das Thema '{topic}'. Sprich den Leser direkt an, gib Tipps und Beispiele."
-    data = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 800}
-    }
     try:
-        response = requests.post(GEMINI_API_URL, headers=headers, params=params, json=data, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        # Fehler intern loggen, aber keine Details (und keinen Key) an den Nutzer ausgeben!
         import logging
-        logging.error(f"KI-Fehler bei Anfrage zu '{topic}': {e}")
+        logging.error(f"OpenAI-Fehler bei Anfrage zu '{topic}': {e}")
         return f"Die KI ist aktuell ausgelastet oder nicht erreichbar. Bitte versuche es später erneut. (Fallback: {topic} ist ein spannendes Thema...)"
 
 @app.route('/', methods=['GET', 'POST'])
@@ -85,7 +83,7 @@ def index():
         if current_user.credits <= 0:
             flash('Du hast keine Credits mehr. Bitte lade dein Konto auf.')
         else:
-            content = generate_content_gemini(topic)
+            content = generate_content_openai(topic)
             current_user.credits -= 1
             db.session.commit()
             title = f'AI-generierter Content zu: {topic}'
